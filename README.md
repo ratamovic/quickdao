@@ -1,2 +1,4 @@
-quickdao
+QuickDAO
 ========
+
+SQLite DAO generator experimentation.
