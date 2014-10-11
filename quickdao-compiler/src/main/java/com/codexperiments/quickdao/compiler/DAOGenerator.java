@@ -7,60 +7,123 @@ import com.codexperiments.quickdao.annotation.Column;
 import com.codexperiments.quickdao.annotation.Id;
 import com.codexperiments.quickdao.annotation.Table;
 import com.squareup.javawriter.JavaWriter;
+import org.reflections.Reflections;
 
 import javax.annotation.processing.*;
 import javax.lang.model.SourceVersion;
-import javax.lang.model.element.Element;
 import javax.lang.model.element.TypeElement;
-import javax.tools.JavaFileObject;
+import javax.tools.*;
+import java.io.File;
 import java.io.IOException;
 import java.io.Writer;
+import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
+import static java.lang.Boolean.parseBoolean;
 import static java.lang.String.format;
 import static java.util.EnumSet.of;
 import static javax.lang.model.element.Modifier.*;
 import static javax.tools.Diagnostic.Kind.ERROR;
+import static javax.tools.Diagnostic.Kind.MANDATORY_WARNING;
+import static javax.tools.Diagnostic.Kind.WARNING;
+import static org.reflections.ReflectionUtils.getAllFields;
+import static org.reflections.ReflectionUtils.withAnnotation;
 
-@SupportedAnnotationTypes({"com.codexperiments.quickdao.annotation.Table"})
+@SupportedAnnotationTypes({"*"})
 @SupportedSourceVersion(SourceVersion.RELEASE_7)
+@SupportedOptions({"inputPackage", "outputPackage"})
 public class DAOGenerator extends AbstractProcessor {
     private Messager messager;
+    private String inputPackage;
+    private String outputPackage;
+    private boolean disabled;
+    private boolean done = false;
 
     @Override
     public synchronized void init(ProcessingEnvironment processingEnv) {
         super.init(processingEnv);
         messager = processingEnv.getMessager();
+        inputPackage = processingEnv.getOptions().get("inputPackage");
+        outputPackage = processingEnv.getOptions().get("outputPackage");
+        disabled = parseBoolean(processingEnv.getOptions().get("disableGeneration"));
+
+        if (disabled) messager.printMessage(MANDATORY_WARNING, format("Not generating sources"));
+        else {
+            messager.printMessage(MANDATORY_WARNING, format("Input package : %s", inputPackage));
+            messager.printMessage(MANDATORY_WARNING, format("Output package : %s", outputPackage));
+        }
+        if (inputPackage == null || inputPackage.isEmpty()) throw new IllegalArgumentException("inputPackage option missing" + inputPackage + "=" + outputPackage);
+        if (outputPackage == null || outputPackage.isEmpty()) throw new IllegalArgumentException("outputPackage option missing" + inputPackage + "=" + outputPackage);
     }
 
-    public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {
-        Set<? extends Element> tableElementSet = roundEnv.getElementsAnnotatedWith(Table.class);
-        Set<? extends Element> idElementSet = roundEnv.getElementsAnnotatedWith(Id.class);
-        Set<? extends Element> columnElementSet = roundEnv.getElementsAnnotatedWith(Column.class);
-        List<TableInfo> tableInfos = new ArrayList<>();
+//    private void findTablesInSources(List<TableInfo> tableInfos, RoundEnvironment roundEnv) {
+//        Set<? extends Element> tableElementSet = roundEnv.getElementsAnnotatedWith(Table.class);
+//        Set<? extends Element> idElementSet = roundEnv.getElementsAnnotatedWith(Id.class);
+//        Set<? extends Element> columnElementSet = roundEnv.getElementsAnnotatedWith(Column.class);
+//        for (Element rawTableElement : tableElementSet) {
+//            TypeElement tableElement = (TypeElement) rawTableElement;
+//            TableInfo tableInfo = new TableInfo(processingEnv, tableElement);
+//            messager.printMessage(MANDATORY_WARNING, format("XXXXXXX %s", tableInfo.javaQualifiedName));
+//
+//            for (Element element : rawTableElement.getEnclosedElements()) {
+//                if (columnElementSet.contains(element)) {
+//                    ColumnInfo columnInfo = new ColumnInfo(element);
+//                    tableInfo.addColumn(columnInfo);
+//
+//                    if (idElementSet.contains(element)) tableInfo.setId(columnInfo);
+//                }
+//            }
+//            tableInfos.add(tableInfo);
+//
+//            // Check annotations.
+//            if (tableInfo.id == null) throw new IllegalStateException(format("Id missing on table %s", tableInfo.javaClass));
+//        }
+//    }
 
-        for (Element rawTableElement : tableElementSet) {
-            TypeElement tableElement = (TypeElement) rawTableElement;
-            TableInfo tableInfo = new TableInfo(processingEnv, tableElement);
+    private void findTablesInDependencies(List<TableInfo> tableInfos) {
+        try {
+            Class.forName("com.codexperiments.newsroot.core.domain.entities.Tweet");
+        } catch (ClassNotFoundException e) {
+            throw new RuntimeException(e);
+        }
+        Reflections reflections = new Reflections("com.codexperiments.newsroot");
+        Set<Class<?>> tableSet = reflections.getTypesAnnotatedWith(Table.class);
+        for (Class<?> table : tableSet) {
+            TableInfo tableInfo = new TableInfo(processingEnv, table);
+            Class<?> tableClass;
+            try {
+                tableClass = Class.forName(tableInfo.javaQualifiedName);
+            } catch (ClassNotFoundException classNotFoundException) {
+                throw new RuntimeException(classNotFoundException);
+            }
 
-            for (Element element : rawTableElement.getEnclosedElements()) {
-                if (columnElementSet.contains(element)) {
-                    ColumnInfo columnInfo = new ColumnInfo(element);
-                    tableInfo.addColumn(columnInfo);
+            Set<Field> columnClassSet = getAllFields(tableClass, withAnnotation(Column.class));
+            for (Field columnField : columnClassSet) {
+                ColumnInfo columnInfo = new ColumnInfo(columnField);
+                tableInfo.addColumn(columnInfo);
 
-                    if (idElementSet.contains(element)) tableInfo.setId(columnInfo);
-                }
+                if (columnField.getAnnotation(Id.class) != null) tableInfo.setId(columnInfo);;
             }
             tableInfos.add(tableInfo);
 
             // Check annotations.
             if (tableInfo.id == null) throw new IllegalStateException(format("Id missing on table %s", tableInfo.javaClass));
         }
+    }
+
+    @Override
+    public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {
+        // Check if processor has already been run.
+        if (done || disabled) return false;
+
+        List<TableInfo> tableInfos = new ArrayList<>();
+        findTablesInDependencies(tableInfos);
 
         // Add links between tables
         for (TableInfo tableInfo : tableInfos) {
+            messager.printMessage(MANDATORY_WARNING, format("Found table %s", tableInfo.javaClass));
             for (ColumnInfo columnInfo : tableInfo.columnInfos) {
                 if (!columnInfo.isJavaPrimitive) {
                     for (TableInfo linkedTableInfo : tableInfos) {
@@ -77,25 +140,26 @@ public class DAOGenerator extends AbstractProcessor {
         }
 
         for (final TableInfo tableInfo : tableInfos) {
-            generateFile(daoClassFQJavaName(tableInfo), tableInfo.element, new ClassGenerator() {
+            generateFile(daoClassFQJavaName(tableInfo), new ClassGenerator() {
                 public void generate(JavaWriter writer) throws Exception {
                     generateTableClass(writer, tableInfo);
                 }
             });
-            generateFile(handlerClassFQJavaName(tableInfo), tableInfo.element, new ClassGenerator() {
+            generateFile(handlerClassFQJavaName(tableInfo), new ClassGenerator() {
                 public void generate(JavaWriter writer) throws Exception {
                     generateHandlerClass(writer, tableInfo);
                 }
             });
         }
-        return true;
+        done = true;
+        return false;
     }
 
-    private void generateFile(String fqJavaName, Element element, ClassGenerator generator) {
+    private void generateFile(String fqJavaName, ClassGenerator generator) {
         Writer writer = null;
         try {
             Filer filer = processingEnv.getFiler();
-            JavaFileObject daoFileObject = filer.createSourceFile(fqJavaName, element);
+            JavaFileObject daoFileObject = filer.createSourceFile(fqJavaName);
             writer = daoFileObject.openWriter();
             JavaWriter javaWriter = new JavaWriter(writer);
             javaWriter.setIndent("    ");
@@ -121,7 +185,7 @@ public class DAOGenerator extends AbstractProcessor {
 
 
     private void generateTableClass(JavaWriter writer, TableInfo tableInfo) throws IOException {
-        writer.emitPackage(tableInfo.javaPackage)
+        writer.emitPackage(daoClassPackage(tableInfo))
               .emitImports(Query.class)
               .emitImports("android.database.sqlite.*")
               .emitEmptyLine();
@@ -297,30 +361,35 @@ public class DAOGenerator extends AbstractProcessor {
         writer.emitField("Table", tableInfo.sqlName, of(PUBLIC, STATIC), "new Table()");
     }
 
-    private static String daoClassJavaName(TableInfo tableInfo) {
+    private String daoClassJavaName(TableInfo tableInfo) {
         return format("%sTable", tableInfo.javaClass);
     }
 
-    private static String daoClassFQJavaName(TableInfo tableInfo) {
-        return tableInfo.javaPackage + "." + daoClassJavaName(tableInfo);
+    private String daoClassFQJavaName(TableInfo tableInfo) {
+        return daoClassPackage(tableInfo) + "." + daoClassJavaName(tableInfo);
     }
 
-    private static String daoFieldJavaName(ColumnInfo columnInfo) {
+    private String daoClassPackage(TableInfo tableInfo) {
+        return tableInfo.javaPackage.replace(inputPackage, outputPackage);
+    }
+
+    private String daoFieldJavaName(ColumnInfo columnInfo) {
         return columnInfo.sqlName.toUpperCase();
     }
 
-    private static String daoFieldJavaValue(ColumnInfo columnInfo) {
+    private String daoFieldJavaValue(ColumnInfo columnInfo) {
         return "\"" + columnInfo.sqlName.toUpperCase() + "\"";
     }
 
-    private static String arrayOfType(String type) {
+    private String arrayOfType(String type) {
         return type + "[]";
     }
 
 
     private void generateHandlerClass(JavaWriter writer, TableInfo tableInfo) throws IOException {
-        writer.emitPackage(tableInfo.javaPackage)
+        writer.emitPackage(handlerClassPackage(tableInfo))
               .emitImports("android.database.*")
+              .emitImports(tableInfo.javaQualifiedName)
               .emitImports(handlerGenericClassJavaFQJavaName())
               .emitEmptyLine();
 
@@ -368,27 +437,31 @@ public class DAOGenerator extends AbstractProcessor {
         writer.endType();
     }
 
-    private static String handlerClassJavaName(TableInfo tableInfo) {
+    private String handlerClassJavaName(TableInfo tableInfo) {
         return format("%sMapper", tableInfo.javaClass);
     }
 
-    private static String handlerClassFQJavaName(TableInfo tableInfo) {
-        return tableInfo.javaPackage + "." + handlerClassJavaName(tableInfo);
+    private String handlerClassFQJavaName(TableInfo tableInfo) {
+        return handlerClassPackage(tableInfo) + "." + handlerClassJavaName(tableInfo);
     }
 
-    private static String handlerGenericClassJavaName(TableInfo tableInfo) {
+    private String handlerClassPackage(TableInfo tableInfo) {
+        return tableInfo.javaPackage.replace(inputPackage, outputPackage);
+    }
+
+    private String handlerGenericClassJavaName(TableInfo tableInfo) {
         return ObjectMapper.class.getSimpleName() + "<" + tableInfo.javaClass + ">";
     }
 
-    private static String handlerGenericClassJavaFQJavaName() {
+    private String handlerGenericClassJavaFQJavaName() {
         return ObjectMapper.class.getName();
     }
 
-    private static String handlerFieldJavaName(ColumnInfo columnInfo) {
+    private String handlerFieldJavaName(ColumnInfo columnInfo) {
         return format("%sIndex", columnInfo.javaName);
     }
 
-    private static String handlerFieldParseMethod(ColumnInfo columnInfo) {
+    private String handlerFieldParseMethod(ColumnInfo columnInfo) {
         switch (columnInfo.javaClass) {
             case "boolean":
                 return format("getInt(%s) > 0", handlerFieldJavaName(columnInfo));
