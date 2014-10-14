@@ -44,9 +44,14 @@
                 <optional>true</optional>
             </dependency>
             <dependency>
-                <groupId>com.netflix.rxjava</groupId>
-                <artifactId>rxjava-core</artifactId>
-                <version>0.20.4</version>
+                <groupId>org.reflections</groupId>
+                <artifactId>reflections</artifactId>
+                <version>0.9.9-RC2</version>
+            </dependency>
+            <dependency>
+                <groupId>io.reactivex</groupId>
+                <artifactId>rxjava</artifactId>
+                <version>1.0.0-rc.7</version>
             </dependency>
 
             <dependency>

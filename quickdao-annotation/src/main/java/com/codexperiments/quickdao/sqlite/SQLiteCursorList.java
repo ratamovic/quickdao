@@ -1,6 +1,5 @@
-package com.codexperiments.quickdao;
+package com.codexperiments.quickdao.sqlite;
 
-import java.io.Closeable;
 import java.io.IOException;
 import java.util.Collection;
 import java.util.Iterator;
@@ -11,22 +10,37 @@ import java.util.NoSuchElementException;
 import android.database.Cursor;
 import rx.functions.Func1;
 
-public class CursorList<TElement> implements List<TElement>, Closeable {
-    private Cursor cursor;
-    private int size;
-    private Func1<Cursor, TElement> getElement;
+public class SQLiteCursorList<TElement> implements List<TElement>, AutoCloseable {
+    private static final SQLiteCursorList EMPTY = new SQLiteCursorList();
 
-    public CursorList(Cursor cursor, Func1<Cursor, TElement> getElement) {
-        super();
-        this.cursor = cursor;
-        this.size = cursor.getCount();
-        this.getElement = getElement;
-        if (size < 0) size = 0;
+    private final Func1<Cursor, TElement> getElement;
+    private final Cursor cursor;
+    private final int size;
+
+    public static final <TElement> SQLiteCursorList<TElement> empty() {
+        return (SQLiteCursorList<TElement>) EMPTY;
     }
 
-    @Override
-    public void close() throws IOException {
-        cursor.close();
+    protected SQLiteCursorList() {
+        super();
+        this.getElement = null;
+        this.size = 0;
+        this.cursor = null;
+    }
+
+    protected SQLiteCursorList(Cursor cursor, Func1<Cursor, TElement> getElement) {
+        super();
+        this.getElement = getElement;
+        this.cursor = cursor;
+        this.size = cursor.getCount();
+    }
+
+    public void recycle(TElement element) {
+
+    }
+
+    public void close() {
+        if (cursor != null) cursor.close();
     }
 
     @Override
@@ -154,10 +168,10 @@ public class CursorList<TElement> implements List<TElement>, Closeable {
     }
 
     private class IteratorImpl implements ListIterator<TElement> {
-        private int mLocation;
+        private int location;
 
         public IteratorImpl(int index) {
-            mLocation = index;
+            location = index;
         }
 
         @Override
@@ -172,29 +186,29 @@ public class CursorList<TElement> implements List<TElement>, Closeable {
 
         @Override
         public boolean hasPrevious() {
-            return mLocation == 0;
+            return location == 0;
         }
 
         @Override
         public TElement next() {
-            if (mLocation < size) return get(size++);
+            if (location < size) return get(location++);
             else throw new NoSuchElementException();
         }
 
         @Override
         public int nextIndex() {
-            return mLocation + 1;
+            return location + 1;
         }
 
         @Override
         public TElement previous() {
-            if (mLocation > 0) return get(size--);
+            if (location > 0) return get(location--);
             else throw new NoSuchElementException();
         }
 
         @Override
         public int previousIndex() {
-            return mLocation - 1;
+            return location - 1;
         }
 
         @Override

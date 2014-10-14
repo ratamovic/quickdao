@@ -1,7 +1,7 @@
 package com.codexperiments.quickdao.compiler;
 
-import com.codexperiments.quickdao.ObjectMapper;
-import com.codexperiments.quickdao.Query;
+import com.codexperiments.quickdao.EntityMapper;
+import com.codexperiments.quickdao.sqlite.SQLiteQueryBuilder;
 import com.codexperiments.quickdao.TableRef;
 import com.codexperiments.quickdao.annotation.Column;
 import com.codexperiments.quickdao.annotation.Id;
@@ -13,7 +13,6 @@ import javax.annotation.processing.*;
 import javax.lang.model.SourceVersion;
 import javax.lang.model.element.TypeElement;
 import javax.tools.*;
-import java.io.File;
 import java.io.IOException;
 import java.io.Writer;
 import java.lang.reflect.Field;
@@ -27,7 +26,6 @@ import static java.util.EnumSet.of;
 import static javax.lang.model.element.Modifier.*;
 import static javax.tools.Diagnostic.Kind.ERROR;
 import static javax.tools.Diagnostic.Kind.MANDATORY_WARNING;
-import static javax.tools.Diagnostic.Kind.WARNING;
 import static org.reflections.ReflectionUtils.getAllFields;
 import static org.reflections.ReflectionUtils.withAnnotation;
 
@@ -150,6 +148,11 @@ public class DAOGenerator extends AbstractProcessor {
                     generateHandlerClass(writer, tableInfo);
                 }
             });
+//            generateFile(listClassFQJavaName(tableInfo), new ClassGenerator() {
+//                public void generate(JavaWriter writer) throws Exception {
+//                    generateListClass(writer, tableInfo);
+//                }
+//            });
         }
         done = true;
         return false;
@@ -186,7 +189,7 @@ public class DAOGenerator extends AbstractProcessor {
 
     private void generateTableClass(JavaWriter writer, TableInfo tableInfo) throws IOException {
         writer.emitPackage(daoClassPackage(tableInfo))
-              .emitImports(Query.class)
+              .emitImports(SQLiteQueryBuilder.class)
               .emitImports("android.database.sqlite.*")
               .emitEmptyLine();
 
@@ -419,17 +422,27 @@ public class DAOGenerator extends AbstractProcessor {
               .emitStatement("%1$s object = new %1$s()", tableInfo.javaClass);
         for (ColumnInfo columnInfo : tableInfo.columnInfos) {
             if (columnInfo.isJavaPrimitive) {
-                writer.emitStatement("object.%s = cursor.%s", columnInfo.javaName, handlerFieldParseMethod(columnInfo));
+                writer.emitStatement("if (%s != -1) object.%s = cursor.%s",
+                                     handlerFieldJavaName(columnInfo), columnInfo.javaName, parseMethod(columnInfo));
             }
         }
         writer.emitStatement("return object")
               .endMethod();
 
+        for (ColumnInfo columnInfo : tableInfo.columnInfos) {
+            if (columnInfo.isJavaPrimitive) {
+                writer.emitEmptyLine()
+                      .beginMethod(columnInfo.javaClass, listMethodJavaName(columnInfo), of(PUBLIC), "Cursor", "cursor")
+                      .emitStatement("return cursor.%s", parseMethod(columnInfo))
+                      .endMethod();
+            }
+        }
+
 //        for (ColumnInfo columnInfo : tableInfo.columnInfos) {
 //            if (columnInfo.isJavaPrimitive) {
 //                writer.emitEmptyLine()
 //                      .beginMethod(columnInfo.javaClass, handlerGetterJavaName(columnInfo), of(PUBLIC), "Cursor", "cursor")
-//                      .emitStatement("return cursor.%s", handlerFieldParseMethod(columnInfo))
+//                      .emitStatement("return cursor.%s", parseMethod(columnInfo))
 //                      .endMethod();
 //            }
 //        }
@@ -450,18 +463,18 @@ public class DAOGenerator extends AbstractProcessor {
     }
 
     private String handlerGenericClassJavaName(TableInfo tableInfo) {
-        return ObjectMapper.class.getSimpleName() + "<" + tableInfo.javaClass + ">";
+        return EntityMapper.class.getSimpleName() + "<" + tableInfo.javaClass + ">";
     }
 
     private String handlerGenericClassJavaFQJavaName() {
-        return ObjectMapper.class.getName();
+        return EntityMapper.class.getName();
     }
 
     private String handlerFieldJavaName(ColumnInfo columnInfo) {
         return format("%sIndex", columnInfo.javaName);
     }
 
-    private String handlerFieldParseMethod(ColumnInfo columnInfo) {
+    private String parseMethod(ColumnInfo columnInfo) {
         switch (columnInfo.javaClass) {
             case "boolean":
                 return format("getInt(%s) > 0", handlerFieldJavaName(columnInfo));
@@ -490,5 +503,47 @@ public class DAOGenerator extends AbstractProcessor {
 
     private static String with1stLetterUpperCase(String value) {
         return value.substring(0, 1).toUpperCase() + value.substring(1, value.length());
+    }
+
+
+
+//    private void generateListClass(JavaWriter writer, TableInfo tableInfo) throws IOException {
+//        writer.emitPackage(listClassPackage(tableInfo))
+//              .emitImports("android.database.*")
+//              .emitImports(tableInfo.javaQualifiedName)
+//              .emitEmptyLine();
+//
+//        writer.beginType(listClassJavaName(tableInfo), "class", of(PUBLIC));
+//
+//        for (ColumnInfo columnInfo : tableInfo.columnInfos) {
+//            if (columnInfo.isJavaPrimitive) {
+//                writer.emitEmptyLine()
+//                      .beginMethod(tableInfo.javaClass, listMethodJavaName(columnInfo), of(PUBLIC), "Cursor", "cursor")
+//                      .emitStatement("return cursor.%s", listFieldJavaName(columnInfo), columnInfo.javaName, parseMethod(columnInfo))
+//                      .endMethod();
+//            }
+//        }
+//
+//        writer.endType();
+//    }
+//
+//    private String listClassJavaName(TableInfo tableInfo) {
+//        return format("%sParser", tableInfo.javaClass);
+//    }
+//
+//    private String listClassFQJavaName(TableInfo tableInfo) {
+//        return listClassPackage(tableInfo) + "." + listClassJavaName(tableInfo);
+//    }
+//
+//    private String listClassPackage(TableInfo tableInfo) {
+//        return tableInfo.javaPackage.replace(inputPackage, outputPackage);
+//    }
+//
+//    private String listFieldJavaName(ColumnInfo columnInfo) {
+//        return format("%sIndex", columnInfo.javaName);
+//    }
+//
+    private String listMethodJavaName(ColumnInfo columnInfo) {
+        return format("get%s", columnInfo.javaName.substring(0, 1).toUpperCase() + columnInfo.javaName.substring(1, columnInfo.javaName.length()));
     }
 }
