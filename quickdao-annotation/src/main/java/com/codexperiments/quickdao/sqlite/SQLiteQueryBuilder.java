@@ -18,8 +18,6 @@ public class SQLiteQueryBuilder {
     private List<String> params;
 
     public SQLiteQueryBuilder() {
-        super();
-
         select = new StringBuilder();
         from = new StringBuilder();
         where = new StringBuilder();
@@ -75,6 +73,20 @@ public class SQLiteQueryBuilder {
         return this;
     }
 
+    public SQLiteQueryBuilder leftJoin(String table, String... columns) {
+        // TODO columns.length == 0
+        selectAll(table, columns);
+        from.append(" left join ").append(table);
+        return this;
+    }
+
+    public SQLiteQueryBuilder leftJoin(TableRef table) {
+        // TODO columns.length == 0
+        selectAll(table.name(), table.columns());
+        from.append(" left join ").append(table.name());
+        return this;
+    }
+
     public SQLiteQueryBuilder on(String leftField, String rightField) {
         from.append(" on ").append(leftField).append(" = ").append(rightField);
         return this;
@@ -98,8 +110,16 @@ public class SQLiteQueryBuilder {
         return whereCondition(column, " > ", Long.toString(value));
     }
 
+    public SQLiteQueryBuilder whereGreaterOrEqual(String column, long value) {
+        return whereCondition(column, " >= ", Long.toString(value));
+    }
+
     public SQLiteQueryBuilder whereLower(String column, long value) {
         return whereCondition(column, " < ", Long.toString(value));
+    }
+
+    public SQLiteQueryBuilder whereLowerOrEqual(String column, long value) {
+        return whereCondition(column, " <= ", Long.toString(value));
     }
 
     private SQLiteQueryBuilder whereCondition(String column, String pOperator, String value) {

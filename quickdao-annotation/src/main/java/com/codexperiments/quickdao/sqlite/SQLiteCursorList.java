@@ -1,16 +1,12 @@
 package com.codexperiments.quickdao.sqlite;
 
-import java.io.IOException;
-import java.util.Collection;
-import java.util.Iterator;
-import java.util.List;
-import java.util.ListIterator;
-import java.util.NoSuchElementException;
-
 import android.database.Cursor;
 import rx.functions.Func1;
 
-public class SQLiteCursorList<TElement> implements List<TElement>, AutoCloseable {
+import java.io.Closeable;
+import java.util.*;
+
+public class SQLiteCursorList<TElement> implements List<TElement>, Closeable {
     private static final SQLiteCursorList EMPTY = new SQLiteCursorList();
 
     private final Func1<Cursor, TElement> getElement;
@@ -172,6 +168,7 @@ public class SQLiteCursorList<TElement> implements List<TElement>, AutoCloseable
 
         public IteratorImpl(int index) {
             location = index;
+            cursor.moveToPosition(index);
         }
 
         @Override
@@ -181,7 +178,7 @@ public class SQLiteCursorList<TElement> implements List<TElement>, AutoCloseable
 
         @Override
         public boolean hasNext() {
-            return cursor.isAfterLast();
+            return (location < size);
         }
 
         @Override
@@ -191,7 +188,7 @@ public class SQLiteCursorList<TElement> implements List<TElement>, AutoCloseable
 
         @Override
         public TElement next() {
-            if (location < size) return get(location++);
+            if (hasNext()) return get(location++);
             else throw new NoSuchElementException();
         }
 

@@ -1,18 +1,17 @@
 package com.codexperiments.quickdao.compiler;
 
 import com.codexperiments.quickdao.EntityMapper;
-import com.codexperiments.quickdao.sqlite.SQLiteQueryBuilder;
-import com.codexperiments.quickdao.TableRef;
 import com.codexperiments.quickdao.annotation.Column;
 import com.codexperiments.quickdao.annotation.Id;
 import com.codexperiments.quickdao.annotation.Table;
-import com.squareup.javawriter.JavaWriter;
+import com.squareup.javapoet.*;
 import org.reflections.Reflections;
 
 import javax.annotation.processing.*;
 import javax.lang.model.SourceVersion;
+import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
-import javax.tools.*;
+import javax.tools.JavaFileObject;
 import java.io.IOException;
 import java.io.Writer;
 import java.lang.reflect.Field;
@@ -22,7 +21,6 @@ import java.util.Set;
 
 import static java.lang.Boolean.parseBoolean;
 import static java.lang.String.format;
-import static java.util.EnumSet.of;
 import static javax.lang.model.element.Modifier.*;
 import static javax.tools.Diagnostic.Kind.ERROR;
 import static javax.tools.Diagnostic.Kind.MANDATORY_WARNING;
@@ -52,8 +50,10 @@ public class DAOGenerator extends AbstractProcessor {
             messager.printMessage(MANDATORY_WARNING, format("Input package : %s", inputPackage));
             messager.printMessage(MANDATORY_WARNING, format("Output package : %s", outputPackage));
         }
-        if (inputPackage == null || inputPackage.isEmpty()) throw new IllegalArgumentException("inputPackage option missing" + inputPackage + "=" + outputPackage);
-        if (outputPackage == null || outputPackage.isEmpty()) throw new IllegalArgumentException("outputPackage option missing" + inputPackage + "=" + outputPackage);
+        if (inputPackage == null || inputPackage.isEmpty())
+            throw new IllegalArgumentException("inputPackage option missing" + inputPackage + "=" + outputPackage);
+        if (outputPackage == null || outputPackage.isEmpty())
+            throw new IllegalArgumentException("outputPackage option missing" + inputPackage + "=" + outputPackage);
     }
 
 //    private void findTablesInSources(List<TableInfo> tableInfos, RoundEnvironment roundEnv) {
@@ -81,11 +81,11 @@ public class DAOGenerator extends AbstractProcessor {
 //    }
 
     private void findTablesInDependencies(List<TableInfo> tableInfos) {
-        try {
-            Class.forName("com.codexperiments.newsroot.core.domain.entities.Tweet");
-        } catch (ClassNotFoundException e) {
-            throw new RuntimeException(e);
-        }
+//        try {
+//            Class.forName("com.codexperiments.newsroot.core.domain.entities.Tweet");
+//        } catch (ClassNotFoundException e) {
+//            throw new RuntimeException(e);
+//        }
         Reflections reflections = new Reflections("com.codexperiments.newsroot");
         Set<Class<?>> tableSet = reflections.getTypesAnnotatedWith(Table.class);
         for (Class<?> table : tableSet) {
@@ -102,7 +102,7 @@ public class DAOGenerator extends AbstractProcessor {
                 ColumnInfo columnInfo = new ColumnInfo(columnField);
                 tableInfo.addColumn(columnInfo);
 
-                if (columnField.getAnnotation(Id.class) != null) tableInfo.setId(columnInfo);;
+                if (columnField.getAnnotation(Id.class) != null) tableInfo.setId(columnInfo);
             }
             tableInfos.add(tableInfo);
 
@@ -123,7 +123,7 @@ public class DAOGenerator extends AbstractProcessor {
         for (TableInfo tableInfo : tableInfos) {
             messager.printMessage(MANDATORY_WARNING, format("Found table %s", tableInfo.javaClass));
             for (ColumnInfo columnInfo : tableInfo.columnInfos) {
-                if (!columnInfo.isJavaPrimitive) {
+                if (!columnInfo.isJavaPrimitive && !columnInfo.isBoxedPrimitive) {
                     for (TableInfo linkedTableInfo : tableInfos) {
                         if (columnInfo.javaClass.equals(linkedTableInfo.javaQualifiedName)) {
                             columnInfo.javaLink = linkedTableInfo;
@@ -139,15 +139,20 @@ public class DAOGenerator extends AbstractProcessor {
 
         for (final TableInfo tableInfo : tableInfos) {
             generateFile(daoClassFQJavaName(tableInfo), new ClassGenerator() {
-                public void generate(JavaWriter writer) throws Exception {
-                    generateTableClass(writer, tableInfo);
+                public JavaFile generate() throws Exception {
+                    return generateTableClass(tableInfo);
                 }
             });
             generateFile(handlerClassFQJavaName(tableInfo), new ClassGenerator() {
-                public void generate(JavaWriter writer) throws Exception {
-                    generateHandlerClass(writer, tableInfo);
+                public JavaFile generate() throws Exception {
+                    return generateMapperClass(tableInfo);
                 }
             });
+//            generateFile(handlerClassFQJavaName(tableInfo), new ClassGenerator() {
+//                public JavaFile generate() throws Exception {
+//                    return generateMapperClass(tableInfo);
+//                }
+//            });
 //            generateFile(listClassFQJavaName(tableInfo), new ClassGenerator() {
 //                public void generate(JavaWriter writer) throws Exception {
 //                    generateListClass(writer, tableInfo);
@@ -164,9 +169,7 @@ public class DAOGenerator extends AbstractProcessor {
             Filer filer = processingEnv.getFiler();
             JavaFileObject daoFileObject = filer.createSourceFile(fqJavaName);
             writer = daoFileObject.openWriter();
-            JavaWriter javaWriter = new JavaWriter(writer);
-            javaWriter.setIndent("    ");
-            generator.generate(javaWriter);
+            generator.generate().writeTo(writer);
         } catch (Exception exception) {
             exception.printStackTrace();
             messager.printMessage(ERROR, format("Error generating %s", fqJavaName));
@@ -183,61 +186,59 @@ public class DAOGenerator extends AbstractProcessor {
     }
 
     public interface ClassGenerator {
-        public void generate(JavaWriter writer) throws Exception;
+        public JavaFile generate() throws Exception;
     }
 
 
-    private void generateTableClass(JavaWriter writer, TableInfo tableInfo) throws IOException {
-        writer.emitPackage(daoClassPackage(tableInfo))
-              .emitImports(SQLiteQueryBuilder.class)
-              .emitImports("android.database.sqlite.*")
-              .emitEmptyLine();
+    private JavaFile generateTableClass(TableInfo tableInfo) throws IOException {
+        TypeSpec.Builder daoBuilder = TypeSpec.classBuilder(daoClassJavaName(tableInfo))
+                                              .addModifiers(Modifier.PUBLIC);
+        daoBuilder.addField(
+                FieldSpec.builder(String.class, tableInfo.sqlName, PUBLIC, STATIC, FINAL)
+                         .initializer("$S", tableInfo.sqlName)
+                         .build());
 
-        writer.beginType(daoClassJavaName(tableInfo), "class", of(PUBLIC));
         for (ColumnInfo columnInfo : tableInfo.columnInfos) {
-            generateTableField(writer, tableInfo, columnInfo);
-        }
-        generateTableColumnSet(writer, tableInfo);
-        generateConstructor(writer, tableInfo);
-        generateInsert(writer, tableInfo);
-        generateUpdate(writer, tableInfo);
-        generateDelete(writer, tableInfo);
-        generateUtils(writer, tableInfo);
-
-        writer.endType();
-    }
-
-    private void generateTableField(JavaWriter writer, TableInfo tableInfo, ColumnInfo columnInfo) throws IOException {
-        writer.emitField(String.class.getName(),
-                         daoFieldJavaName(columnInfo),
-                         of(PUBLIC, STATIC, FINAL),
-                         daoFieldJavaValue(columnInfo));
-    }
-
-    private void generateTableColumnSet(JavaWriter writer, TableInfo tableInfo) throws IOException {
-        writer.emitEmptyLine();
-        String columns = "";
-        for (ColumnInfo columnInfo : tableInfo.columnInfos) {
-            if (!columns.isEmpty()) columns += ", ";
-            columns += daoFieldJavaName(columnInfo);
+            daoBuilder.addField(
+                    FieldSpec.builder(String.class, daoFieldJavaName(columnInfo), PUBLIC, STATIC, FINAL)
+                             .initializer("$S", daoFieldJavaValue(columnInfo))
+                             .build());
         }
 
-        writer.emitField(arrayOfType(String.class.getName()),
-                         "COLUMNS",
-                         of(PUBLIC, STATIC, FINAL),
-                         "{ " + columns + " }");
+        String columnsFieldValue = " { ";
+        for (int i = 0; i < tableInfo.columnInfos.size(); ++i) {
+            if (i > 0) columnsFieldValue += " , ";
+            columnsFieldValue += daoFieldJavaValue(tableInfo.columnInfos.get(i));
+        }
+        columnsFieldValue += " } ";
+        FieldSpec.Builder colunnsField = FieldSpec
+                .builder(ArrayTypeName.of(String.class), tableInfo.sqlName + "_COLUMNS", PUBLIC, STATIC, FINAL);
+        colunnsField.initializer(columnsFieldValue);
+        daoBuilder.addField(colunnsField.build());
+
+        return JavaFile.builder(daoClassPackage(tableInfo), daoBuilder.build()).build();
     }
 
-    private void generateConstructor(JavaWriter writer, TableInfo tableInfo) throws IOException {
-        writer.emitEmptyLine();
-        writer.emitField("SQLiteDatabase", "connection", of(PRIVATE));
-        writer.emitEmptyLine();
-        writer.beginConstructor(of(PUBLIC), "SQLiteDatabase", "connection")
-              .emitStatement("this.connection = connection")
-              .endConstructor();
+    private void generateConstructor(TypeSpec.Builder daoBuilder, TableInfo tableInfo) throws IOException {
+        ClassName SQLiteDatabaseClass = ClassName.get("android.database.sqlite", "SQLiteDatabase");
+
+        daoBuilder.addField(FieldSpec.builder(SQLiteDatabaseClass, "connection", PRIVATE).build());
+
+        daoBuilder.addMethod(
+                MethodSpec.constructorBuilder()
+                          .addModifiers(PUBLIC)
+                          .addParameter(ParameterSpec.builder(SQLiteDatabaseClass, "connection").build())
+                          .addStatement("this.connection = connection")
+                          .build());
+//        writer.emitEmptyLine();
+//        writer.emitField("SQLiteDatabase", "connection", of(PRIVATE));
+//        writer.emitEmptyLine();
+//        writer.beginConstructor(of(PUBLIC), "SQLiteDatabase", "connection")
+//              .emitStatement("this.connection = connection")
+//              .endConstructor();
     }
 
-    private void generateInsert(JavaWriter writer, TableInfo tableInfo) throws IOException {
+    private void generateInsert(TypeSpec.Builder daoBuilder, TableInfo tableInfo) throws IOException {
         StringBuilder insert = new StringBuilder("insert into ").append(tableInfo.sqlName);
         // Insert clause.
         for (int i = 0; i < tableInfo.columnInfos.size(); ++i) {
@@ -251,30 +252,43 @@ public class DAOGenerator extends AbstractProcessor {
         }
         insert.append(");");
 
-        writer.emitEmptyLine();
-        writer.beginMethod("void", "create", of(PUBLIC), tableInfo.javaQualifiedName, "object");
-        writer.emitStatement("final String insert = \"%s\"", insert.toString());
-        writer.emitEmptyLine();
-        writer.emitStatement("SQLiteStatement statement = connection.compileStatement(insert)");
+//        writer.emitEmptyLine();
+        ClassName ParameterClass = ClassName.get(tableInfo.javaPackage, tableInfo.javaClass);
+        MethodSpec.Builder methodBuilder = MethodSpec
+                .methodBuilder("create")
+                .addModifiers(PUBLIC)
+                .returns(TypeName.VOID)
+                .addParameter(ParameterSpec.builder(ParameterClass, "object").build())
+                .addStatement("final String insert = \"$S\"", insert.toString())
+                .addStatement("SQLiteStatement statement = connection.compileStatement(insert)");
+//        writer.beginMethod("void", "create", of(PUBLIC), tableInfo.javaQualifiedName, "object");
+//        writer.emitStatement("final String insert = \"%s\"", insert.toString());
+//        writer.emitEmptyLine();
+//        writer.emitStatement("SQLiteStatement statement = connection.compileStatement(insert)");
         // Effective values.
         int index = 1;
         for (int i = 0; i < tableInfo.columnInfos.size(); ++i) {
             ColumnInfo columnInfo = tableInfo.columnInfos.get(i);
 
             if (columnInfo.isJavaPrimitive) {
-                writer.emitStatement("statement.bindString(%s, String.valueOf(object.%s))", index++, columnInfo.javaName);
+                methodBuilder.addStatement("statement.bindString($S, String.valueOf(object.$S))", index++, columnInfo.javaName);
+//                writer.emitStatement("statement.bindString(%s, String.valueOf(object.%s))", index++, columnInfo.javaName);
             } else {
-                writer.emitStatement("statement.bindString(%s, String.valueOf(object.%s.%s))", index++, columnInfo.javaName, columnInfo.javaLink.id.javaName);
+                methodBuilder
+                        .addStatement("statement.bindString($S, String.valueOf(object.$S.$S))", index++, columnInfo.javaName, "WWW"/*columnInfo.javaLink.id.javaName*/);
+//                writer.emitStatement("statement.bindString(%s, String.valueOf(object.%s.%s))", index++, columnInfo.javaName, columnInfo.javaLink.id.javaName);
             }
         }
         // TODO Try catch and check rowId
-        writer.emitEmptyLine()
-              .emitStatement("object.%s = statement.executeInsert()", tableInfo.id.javaName);
+        methodBuilder.addStatement("object.$S = statement.executeInsert()", tableInfo.id.javaName);
+//        writer.emitEmptyLine()
+//              .emitStatement("object.%s = statement.executeInsert()", tableInfo.id.javaName);
 
-        writer.endMethod();
+//        writer.endMethod();
+        daoBuilder.addMethod(methodBuilder.build());
     }
 
-    private void generateUpdate(JavaWriter writer, TableInfo tableInfo) throws IOException {
+    private void generateUpdate(TypeSpec.Builder daoBuilder, TableInfo tableInfo) throws IOException {
         StringBuilder update = new StringBuilder("update ").append(tableInfo.sqlName);
         // Update clause.
         update.append(" set");
@@ -287,11 +301,19 @@ public class DAOGenerator extends AbstractProcessor {
         }
         update.append(" where ").append(tableInfo.id.sqlName).append(" = ?;");
 
-        writer.emitEmptyLine();
-        writer.beginMethod("void", "update", of(PUBLIC), tableInfo.javaQualifiedName, "object");
-        writer.emitStatement("final String update = \"%s\"", update.toString());
-        writer.emitEmptyLine();
-        writer.emitStatement("SQLiteStatement statement = connection.compileStatement(update)");
+        ClassName ParameterClass = ClassName.get(tableInfo.javaPackage, tableInfo.javaClass);
+        MethodSpec.Builder methodBuilder = MethodSpec
+                .methodBuilder("update")
+                .addModifiers(PUBLIC)
+                .addParameter(ParameterSpec.builder(ParameterClass, "object").build())
+                .addStatement("final String update = \"$S\"", update.toString())
+                .addStatement("SQLiteStatement statement = connection.compileStatement(update)")
+                .returns(TypeName.VOID);
+//        writer.emitEmptyLine();
+//        writer.beginMethod("void", "update", of(PUBLIC), tableInfo.javaQualifiedName, "object");
+//        writer.emitStatement("final String update = \"%s\"", update.toString());
+//        writer.emitEmptyLine();
+//        writer.emitStatement("SQLiteStatement statement = connection.compileStatement(update)");
         // Effective values.
         int index = 1;
         for (int i = 0; i < tableInfo.columnInfos.size(); ++i) {
@@ -300,68 +322,112 @@ public class DAOGenerator extends AbstractProcessor {
             if (columnInfo == tableInfo.id) continue;
 
             if (columnInfo.isJavaPrimitive) {
-                writer.emitStatement("statement.bindString(%s, String.valueOf(object.%s))", index++, columnInfo.javaName);
+                methodBuilder.addStatement("statement.bindString($S, String.valueOf(object.$S))", index++, columnInfo.javaName);
+//                writer.emitStatement("statement.bindString(%s, String.valueOf(object.%s))", index++, columnInfo.javaName);
             } else {
-                writer.emitStatement("statement.bindString(%s, String.valueOf(object.%s.%s))", index++, columnInfo.javaName, columnInfo.javaLink.id.javaName);
+                methodBuilder
+                        .addStatement("statement.bindString($S, String.valueOf(object.$S.$S))", index++, columnInfo.javaName, "XXX"/*columnInfo.javaLink.id.javaName*/);
+//                writer.emitStatement("statement.bindString(%s, String.valueOf(object.%s.%s))", index++, columnInfo.javaName, columnInfo.javaLink.id.javaName);
             }
         }
-        writer.emitStatement("statement.bindString(%s, String.valueOf(object.%s))", index, tableInfo.id.javaName);
+        methodBuilder.addStatement("statement.bindString($S, String.valueOf(object.$S))", index, tableInfo.id.javaName);
+//        writer.emitStatement("statement.bindString($S, String.valueOf(object.$S))", index, tableInfo.id.javaName);
         // TODO Try catch and check updatedRows == 1
-        writer.emitEmptyLine()
-              .emitStatement("int updatedRows = statement.executeUpdateDelete()", tableInfo.id.javaName)
-              .emitStatement("if (updatedRows != 1) throw new RuntimeException(\"Object has not been updated\")");
-
-        writer.endMethod();
+        methodBuilder.addStatement("int updatedRows = statement.executeUpdateDelete()");
+        methodBuilder.addStatement("if (updatedRows != 1) throw new RuntimeException(\"Object has not been updated\")");
+//        writer.emitEmptyLine()
+//              .emitStatement("int updatedRows = statement.executeUpdateDelete()", tableInfo.id.javaName)
+//              .emitStatement("if (updatedRows != 1) throw new RuntimeException(\"Object has not been updated\")");
+//
+//        writer.endMethod();
     }
 
-    private void generateDelete(JavaWriter writer, TableInfo tableInfo) throws IOException {
+    private void generateDelete(TypeSpec.Builder daoBuilder, TableInfo tableInfo) throws IOException {
         StringBuilder delete = new StringBuilder("delete from ").append(tableInfo.sqlName);
         delete.append(" where ").append(tableInfo.id.sqlName).append(" = ?;");
 
-        writer.emitEmptyLine();
-        writer.beginMethod("void", "delete", of(PUBLIC), tableInfo.javaQualifiedName, "object");
-        writer.emitStatement("final String delete = \"%s\"", delete.toString());
-        writer.emitEmptyLine();
+        ClassName ParameterClass = ClassName.get(tableInfo.javaPackage, tableInfo.javaClass);
+        MethodSpec.Builder methodBuilder = MethodSpec
+                .methodBuilder("delete")
+                .addModifiers(PUBLIC)
+                .addParameter(ParameterSpec.builder(ParameterClass, "object").build())
+                .addStatement("final String delete = \"$S\"", delete.toString())
+                .addStatement("SQLiteStatement statement = connection.compileStatement(delete)")
+                .addStatement("")
+                .addStatement("statement.bindString($S, String.valueOf(object.$S))", 1, tableInfo.id.javaName)
+                .addStatement("")
+                .addStatement("int deletedRows = statement.executeUpdateDelete()")
+                .addStatement("if (deletedRows != 1) throw new RuntimeException(\"Object has not been deleted\")")
+                .returns(TypeName.VOID);
 
-        writer.emitStatement("SQLiteStatement statement = connection.compileStatement(delete)");
-        writer.emitStatement("statement.bindString(%s, String.valueOf(object.%s))", 1, tableInfo.id.javaName);
+
+//        writer.emitEmptyLine();
+//        writer.beginMethod("void", "delete", of(PUBLIC), tableInfo.javaQualifiedName, "object");
+//        writer.emitStatement("final String delete = \"%s\"", delete.toString());
+//        writer.emitEmptyLine();
+
+//        writer.emitStatement("SQLiteStatement statement = connection.compileStatement(delete)");
+//        writer.emitStatement("statement.bindString(%s, String.valueOf(object.%s))", 1, tableInfo.id.javaName);
         // TODO Try catch and check updatedRows == 1
-        writer.emitEmptyLine()
-              .emitStatement("int deletedRows = statement.executeUpdateDelete()", tableInfo.id.javaName)
-              .emitStatement("if (deletedRows != 1) throw new RuntimeException(\"Object has not been deleted\")");
-
-        writer.endMethod();
+//        writer.emitEmptyLine()
+//              .emitStatement("int deletedRows = statement.executeUpdateDelete()", tableInfo.id.javaName)
+//              .emitStatement("if (deletedRows != 1) throw new RuntimeException(\"Object has not been deleted\")");
+//
+//        writer.endMethod();
+        daoBuilder.addMethod(methodBuilder.build());
     }
 
-    private void generateUtils(JavaWriter writer, TableInfo tableInfo) throws IOException {
+    private void generateUtils(TypeSpec.Builder daoBuilder, TableInfo tableInfo) throws IOException {
         StringBuilder select = new StringBuilder("select from ").append(tableInfo.sqlName);
         select.append(" where ").append(tableInfo.id.sqlName).append(" = ?;");
 
-        writer.emitEmptyLine();
-        writer.beginMethod(String.class.getName(), "name", of(PUBLIC, STATIC));
-        writer.emitStatement("return \"%s\"", tableInfo.sqlName);
-        writer.endMethod();
+        daoBuilder.addMethod(
+                MethodSpec.methodBuilder("columns")
+                          .addModifiers(PUBLIC, STATIC)
+                          .returns(ClassName.get(String.class))
+                          .addStatement("return \"$S\"", tableInfo.sqlName)
+                          .build());
+//        writer.emitEmptyLine();
+//        writer.beginMethod(String.class.getName(), "name", of(PUBLIC, STATIC));
+//        writer.emitStatement("return \"%s\"", tableInfo.sqlName);
+//        writer.endMethod();
+//
+        daoBuilder.addMethod(
+                MethodSpec.methodBuilder("columns")
+                          .addModifiers(PUBLIC, STATIC)
+                          .returns(ArrayTypeName.of(String.class))
+                          .addStatement("return COLUMNS")
+                          .build());
+//        writer.emitEmptyLine();
+//        writer.beginMethod(arrayOfType(String.class.getName()), "columns", of(PUBLIC, STATIC));
+//        writer.emitStatement("return COLUMNS");
+//        writer.endMethod();
 
-        writer.emitEmptyLine();
-        writer.beginMethod(arrayOfType(String.class.getName()), "columns", of(PUBLIC, STATIC));
-        writer.emitStatement("return COLUMNS");
-        writer.endMethod();
+//        writer.emitEmptyLine();
+//        writer.beginType("Table", "class", of(PUBLIC, STATIC), null, TableRef.class.getName());
+//        writer.emitEmptyLine();
+//        writer.beginMethod(String.class.getName(), "name", of(PUBLIC));
+//        writer.emitStatement("return \"%s\"", tableInfo.sqlName);
+//        writer.endMethod();
 
-        writer.emitEmptyLine();
-        writer.beginType("Table", "class", of(PUBLIC, STATIC), null, TableRef.class.getName());
-        writer.emitEmptyLine();
-        writer.beginMethod(String.class.getName(), "name", of(PUBLIC));
-        writer.emitStatement("return \"%s\"", tableInfo.sqlName);
-        writer.endMethod();
-
-        writer.emitEmptyLine();
-        writer.beginMethod(arrayOfType(String.class.getName()), "columns", of(PUBLIC));
-        writer.emitStatement("return %s.COLUMNS", daoClassJavaName(tableInfo));
-        writer.endMethod();
-        writer.endType();
-
-        writer.emitEmptyLine();
-        writer.emitField("Table", tableInfo.sqlName, of(PUBLIC, STATIC), "new Table()");
+        daoBuilder.addMethod(
+                MethodSpec.methodBuilder("columns")
+                          .addModifiers(PUBLIC)
+                          .returns(ArrayTypeName.of(String.class))
+                          .addStatement("return $S.COLUMNS", daoClassJavaName(tableInfo))
+                          .build());
+//        writer.emitEmptyLine();
+//        writer.beginMethod(arrayOfType(String.class.getName()), "columns", of(PUBLIC));
+//        writer.emitStatement("return %s.COLUMNS", daoClassJavaName(tableInfo));
+//        writer.endMethod();
+//        writer.endType();
+//
+//        writer.emitEmptyLine();
+        daoBuilder.addField(
+                FieldSpec.builder(ClassName.get(tableInfo.javaQualifiedName, "Table"), tableInfo.sqlName, PUBLIC, STATIC)
+                         .initializer("new Table()")
+                         .build());
+//        writer.emitField("Table", tableInfo.sqlName, of(PUBLIC, STATIC), "new Table()");
     }
 
     private String daoClassJavaName(TableInfo tableInfo) {
@@ -381,7 +447,7 @@ public class DAOGenerator extends AbstractProcessor {
     }
 
     private String daoFieldJavaValue(ColumnInfo columnInfo) {
-        return "\"" + columnInfo.sqlName.toUpperCase() + "\"";
+        return columnInfo.sqlName.toUpperCase();
     }
 
     private String arrayOfType(String type) {
@@ -389,65 +455,113 @@ public class DAOGenerator extends AbstractProcessor {
     }
 
 
-    private void generateHandlerClass(JavaWriter writer, TableInfo tableInfo) throws IOException {
-        writer.emitPackage(handlerClassPackage(tableInfo))
-              .emitImports("android.database.*")
-              .emitImports(tableInfo.javaQualifiedName)
-              .emitImports(handlerGenericClassJavaFQJavaName())
-              .emitEmptyLine();
+    private JavaFile generateMapperClass(TableInfo tableInfo) throws IOException {
+        ClassName dtoClass = ClassName.get(tableInfo.javaPackage, tableInfo.javaClass);
+        ParameterizedTypeName dtoClassClass = ParameterizedTypeName.get(ClassName.get(Class.class), dtoClass);
 
-        writer.beginType(handlerClassJavaName(tableInfo), "class", of(PUBLIC), null, handlerGenericClassJavaName(tableInfo));
-        for (ColumnInfo columnInfo : tableInfo.columnInfos) {
-            if (columnInfo.isJavaPrimitive) {
-                writer.emitField("int", handlerFieldJavaName(columnInfo), of(PROTECTED));
-            }
-        }
-        writer.emitEmptyLine()
-              .beginMethod(classJavaName(tableInfo), "ofType", of(PUBLIC))
-              .emitStatement("return %s.class", tableInfo.javaClass)
-              .endMethod();
+        TypeSpec.Builder mapperBuilder =
+                TypeSpec.classBuilder(handlerClassJavaName(tableInfo))
+                        .addSuperinterface(ParameterizedTypeName.get(ClassName.get(EntityMapper.class), dtoClass));
 
-        writer.emitEmptyLine()
-              .beginMethod("void", "initialize", of(PUBLIC), "Cursor", "cursor");
-        for (ColumnInfo columnInfo : tableInfo.columnInfos) {
-            if (columnInfo.isJavaPrimitive) {
-                writer.emitStatement("%s = cursor.getColumnIndex(%s.%s)",
-                                     handlerFieldJavaName(columnInfo), daoClassJavaName(tableInfo), columnInfo.sqlName);
-            }
-        }
-        writer.endMethod();
-
-        writer.emitEmptyLine()
-              .beginMethod(tableInfo.javaClass, "parseRow", of(PUBLIC), "Cursor", "cursor")
-              .emitStatement("%1$s object = new %1$s()", tableInfo.javaClass);
-        for (ColumnInfo columnInfo : tableInfo.columnInfos) {
-            if (columnInfo.isJavaPrimitive) {
-                writer.emitStatement("if (%s != -1) object.%s = cursor.%s",
-                                     handlerFieldJavaName(columnInfo), columnInfo.javaName, parseMethod(columnInfo));
-            }
-        }
-        writer.emitStatement("return object")
-              .endMethod();
-
-        for (ColumnInfo columnInfo : tableInfo.columnInfos) {
-            if (columnInfo.isJavaPrimitive) {
-                writer.emitEmptyLine()
-                      .beginMethod(columnInfo.javaClass, listMethodJavaName(columnInfo), of(PUBLIC), "Cursor", "cursor")
-                      .emitStatement("return cursor.%s", parseMethod(columnInfo))
-                      .endMethod();
-            }
+        for (int i = 0; i < tableInfo.columnInfos.size(); ++i) {
+            ColumnInfo columnInfo = tableInfo.columnInfos.get(i);
+            mapperBuilder.addField(
+                    FieldSpec.builder(int.class, columnInfo.javaName + "Index").build());
         }
 
+
+        mapperBuilder.addMethod(
+                MethodSpec.methodBuilder("ofType")
+                          .addModifiers(PUBLIC)
+                          .returns(dtoClassClass)
+                          .addStatement("return " + ClassName.get(tableInfo.javaPackage, tableInfo.javaClass).simpleName() + ".class")
+                          .build());
+
+        MethodSpec.Builder initializeMethod =
+                MethodSpec.methodBuilder("initialize")
+                          .addModifiers(PUBLIC)
+                          .addParameter(ClassName.get("android.database", "Cursor"), "cursor");
+        for (ColumnInfo columnInfo : tableInfo.columnInfos) {
+            initializeMethod.addStatement(columnInfo.javaName + "Index = cursor.getColumnIndex($S)", columnInfo.sqlName);
+        }
+        mapperBuilder.addMethod(initializeMethod.build());
+
+        MethodSpec.Builder parseMethod =
+                MethodSpec.methodBuilder("parseRow")
+                          .addModifiers(PUBLIC)
+                          .returns(dtoClass)
+                          .addParameter(ClassName.get("android.database", "Cursor"), "cursor");
+        String varName = tableInfo.javaClass.toLowerCase();
+        parseMethod.addStatement("$L $L = new $L()", tableInfo.javaClass, varName, tableInfo.javaClass);
+        for (ColumnInfo columnInfo : tableInfo.columnInfos) {
+            if (columnInfo.isJavaPrimitive) {
+                parseMethod.addStatement("if ($L != -1) $L.$L(cursor.$L)",
+                                         columnInfo.javaName + "Index", varName, handlerSetterJavaName(columnInfo), parseMethod(columnInfo));
+            }
+        }
+        parseMethod.addStatement("return $L", varName);
+        mapperBuilder.addMethod(parseMethod.build());
+
+
+//        writer.emitPackage(handlerClassPackage(tableInfo))
+//              .emitImports("android.database.*")
+//              .emitImports(tableInfo.javaQualifiedName)
+//              .emitImports(handlerGenericClassJavaFQJavaName())
+//              .emitEmptyLine();
+//
+//        writer.beginType(handlerClassJavaName(tableInfo), "class", of(PUBLIC), null, handlerGenericClassJavaName(tableInfo));
+//        for (ColumnInfo columnInfo : tableInfo.columnInfos) {
+//            if (columnInfo.isJavaPrimitive) {
+//                writer.emitField("int", handlerFieldJavaName(columnInfo), of(PROTECTED));
+//            }
+//        }
+//        writer.emitEmptyLine()
+//              .beginMethod(classJavaName(tableInfo), "ofType", of(PUBLIC))
+//              .emitStatement("return %s.class", tableInfo.javaClass)
+//              .endMethod();
+//
+//        writer.emitEmptyLine()
+//              .beginMethod("void", "initialize", of(PUBLIC), "Cursor", "cursor");
+//        for (ColumnInfo columnInfo : tableInfo.columnInfos) {
+//            if (columnInfo.isJavaPrimitive) {
+//                writer.emitStatement("%s = cursor.getColumnIndex(%s.%s)",
+//                                     handlerFieldJavaName(columnInfo), daoClassJavaName(tableInfo), columnInfo.sqlName);
+//            }
+//        }
+//        writer.endMethod();
+//
+//        writer.emitEmptyLine()
+//              .beginMethod(tableInfo.javaClass, "parseRow", of(PUBLIC), "Cursor", "cursor")
+//              .emitStatement("%1$s object = new %1$s()", tableInfo.javaClass);
+//        for (ColumnInfo columnInfo : tableInfo.columnInfos) {
+//            if (columnInfo.isJavaPrimitive) {
+//                writer.emitStatement("if (%s != -1) object.%s = cursor.%s",
+//                                     handlerFieldJavaName(columnInfo), columnInfo.javaName, parseMethod(columnInfo));
+//            }
+//        }
+//        writer.emitStatement("return object")
+//              .endMethod();
+//
 //        for (ColumnInfo columnInfo : tableInfo.columnInfos) {
 //            if (columnInfo.isJavaPrimitive) {
 //                writer.emitEmptyLine()
-//                      .beginMethod(columnInfo.javaClass, handlerGetterJavaName(columnInfo), of(PUBLIC), "Cursor", "cursor")
+//                      .beginMethod(columnInfo.javaClass, listMethodJavaName(columnInfo), of(PUBLIC), "Cursor", "cursor")
 //                      .emitStatement("return cursor.%s", parseMethod(columnInfo))
 //                      .endMethod();
 //            }
 //        }
-
-        writer.endType();
+//
+////        for (ColumnInfo columnInfo : tableInfo.columnInfos) {
+////            if (columnInfo.isJavaPrimitive) {
+////                writer.emitEmptyLine()
+////                      .beginMethod(columnInfo.javaClass, handlerGetterJavaName(columnInfo), of(PUBLIC), "Cursor", "cursor")
+////                      .emitStatement("return cursor.%s", parseMethod(columnInfo))
+////                      .endMethod();
+////            }
+////        }
+//
+//        writer.endType();
+        return JavaFile.builder(handlerClassPackage(tableInfo), mapperBuilder.build()).build();
     }
 
     private String handlerClassJavaName(TableInfo tableInfo) {
@@ -459,7 +573,12 @@ public class DAOGenerator extends AbstractProcessor {
     }
 
     private String handlerClassPackage(TableInfo tableInfo) {
-        return tableInfo.javaPackage.replace(inputPackage, outputPackage);
+        if (tableInfo.javaPackage.startsWith("com.codexperiments.newsroot.core.domain.entity"))
+            return tableInfo.javaPackage.replace("com.codexperiments.newsroot.core.domain.entity", "com.codexperiments.newsroot.data.repository");
+        else if (tableInfo.javaPackage.startsWith("com.codexperiments.newsroot.core.application.viewmodel"))
+            return tableInfo.javaPackage.replace("com.codexperiments.newsroot.core.application.viewmodel", "com.codexperiments.newsroot.data.provider");
+        else
+            return tableInfo.javaPackage.replace(inputPackage, outputPackage);
     }
 
     private String handlerGenericClassJavaName(TableInfo tableInfo) {
@@ -497,6 +616,10 @@ public class DAOGenerator extends AbstractProcessor {
         return format("get%s", with1stLetterUpperCase(columnInfo.javaName));
     }
 
+    private static String handlerSetterJavaName(ColumnInfo columnInfo) {
+        return format("set%s", with1stLetterUpperCase(columnInfo.javaName));
+    }
+
     private static String classJavaName(TableInfo tableInfo) {
         return "Class<" + tableInfo.javaClass + ">";
     }
@@ -506,8 +629,7 @@ public class DAOGenerator extends AbstractProcessor {
     }
 
 
-
-//    private void generateListClass(JavaWriter writer, TableInfo tableInfo) throws IOException {
+    //    private void generateListClass(TypeSpec.Builder daoBuilder, TableInfo tableInfo) throws IOException {
 //        writer.emitPackage(listClassPackage(tableInfo))
 //              .emitImports("android.database.*")
 //              .emitImports(tableInfo.javaQualifiedName)

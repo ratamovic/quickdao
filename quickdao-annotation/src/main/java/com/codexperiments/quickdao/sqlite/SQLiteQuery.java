@@ -12,12 +12,12 @@ import java.lang.reflect.Array;
 import java.util.ArrayList;
 import java.util.List;
 
-public abstract class SQLiteQuery<TEntity, TEntityMapper extends EntityMapper<TEntity>> implements Query<TEntity> {
+public class SQLiteQuery<TEntity, TEntityMapper extends EntityMapper<TEntity>> implements Query<TEntity> {
     protected SQLiteDatabase connection;
     public TEntityMapper entityMapper;
     protected SQLiteQueryBuilder queryBuilder;
 
-    public SQLiteQuery(SQLiteDatasource datasource, TEntityMapper entityMapper, SQLiteQueryBuilder queryBuilder) {
+    public SQLiteQuery(SQLiteDataSource datasource, TEntityMapper entityMapper, SQLiteQueryBuilder queryBuilder) {
         this.connection = datasource.getConnection();
         this.entityMapper = entityMapper;
         this.queryBuilder = queryBuilder;
@@ -95,9 +95,9 @@ public abstract class SQLiteQuery<TEntity, TEntityMapper extends EntityMapper<TE
         });
     }
 
-    public Observable<SQLiteCursorList<TEntity>> asObservableList() {
-        return Observable.create(new Observable.OnSubscribe<SQLiteCursorList<TEntity>>() {
-            public void call(Subscriber<? super SQLiteCursorList<TEntity>> subscriber) {
+    public Observable<List<TEntity>> asObservableList() {
+        return Observable.create(new Observable.OnSubscribe<List<TEntity>>() {
+            public void call(Subscriber<? super List<TEntity>> subscriber) {
                 Cursor cursor = null;
                 try {
                     cursor = connection.rawQuery(queryBuilder.toQuery(), queryBuilder.toParams());
@@ -123,5 +123,57 @@ public abstract class SQLiteQuery<TEntity, TEntityMapper extends EntityMapper<TE
     @Override
     public <TResult> TResult retrieve(Func1<Query<TEntity>, TResult> retriever) {
         return retriever.call(this);
+    }
+
+
+    public static <TEntity, TEntityMapper extends EntityMapper<TEntity>>
+    Observable<List<TEntity>> observableListQuery(final SQLiteDataSource dataSource, final TEntityMapper entityMapper,
+                                                  final SQLiteQueryBuilder queryBuilder) {
+        return Observable.create(new Observable.OnSubscribe<List<TEntity>>() {
+            public void call(Subscriber<? super List<TEntity>> subscriber) {
+                Cursor cursor = null;
+                try {
+                    cursor = dataSource.getConnection().rawQuery(queryBuilder.toQuery(), queryBuilder.toParams());
+                    entityMapper.initialize(cursor);
+                    if (!subscriber.isUnsubscribed()) {
+                        subscriber.onNext(new SQLiteCursorList<TEntity>(cursor, new Func1<Cursor, TEntity>() {
+                            @Override
+                            public TEntity call(Cursor cursor) {
+                                return entityMapper.parseRow(cursor);
+                            }
+                        }));
+                    }
+                    if (!subscriber.isUnsubscribed()) subscriber.onCompleted();
+                } catch (Exception exception) {
+                    if (!subscriber.isUnsubscribed()) subscriber.onError(exception);
+//                } finally {
+//                    if (cursor != null) cursor.close();
+                }
+            }
+        });
+    }
+
+    public static <TEntity, TEntityMapper extends EntityMapper<TEntity>>
+    Observable<TEntity> observableQuery(final SQLiteDataSource dataSource, final TEntityMapper entityMapper,
+                                        final SQLiteQueryBuilder queryBuilder) {
+        return Observable.create(new Observable.OnSubscribe<TEntity>() {
+            public void call(Subscriber<? super TEntity> subscriber) {
+                Cursor cursor = null;
+                try {
+                    cursor = dataSource.getConnection().rawQuery(queryBuilder.toQuery(), queryBuilder.toParams());
+                    entityMapper.initialize(cursor);
+
+                    while (cursor.moveToNext()) {
+                        if (subscriber.isUnsubscribed()) return;
+                        subscriber.onNext(entityMapper.parseRow(cursor));
+                    }
+                    if (!subscriber.isUnsubscribed()) subscriber.onCompleted();
+                } catch (Exception exception) {
+                    if (!subscriber.isUnsubscribed()) subscriber.onError(exception);
+                } finally {
+                    if (cursor != null) cursor.close();
+                }
+            }
+        });
     }
 }

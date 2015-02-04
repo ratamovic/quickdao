@@ -8,11 +8,11 @@ import android.util.Log;
 import java.io.IOException;
 import java.io.InputStream;
 
-public abstract class SQLiteDatasource extends SQLiteOpenHelper {
+public abstract class SQLiteDataSource extends SQLiteOpenHelper {
     private Context context;
     private SQLiteDatabase connection;
 
-    public SQLiteDatasource(Context context, String name, int version) {
+    public SQLiteDataSource(Context context, String name, int version) {
         super(context, name, null, version);
         this.context = context;
         this.connection = null;
@@ -26,6 +26,7 @@ public abstract class SQLiteDatasource extends SQLiteOpenHelper {
     @Override
     public void onOpen(SQLiteDatabase database) {
         connection = database;
+        connection.execSQL("PRAGMA foreign_keys = ON");
     }
 
     @Override
@@ -41,6 +42,19 @@ public abstract class SQLiteDatasource extends SQLiteOpenHelper {
     @Override
     public void onDowngrade(SQLiteDatabase database, int oldVersion, int newVersion) {
         connection = database;
+    }
+
+    public void beginTransaction() {
+        connection.beginTransaction();
+    }
+
+    public void commit() {
+        connection.setTransactionSuccessful();
+        connection.endTransaction();
+    }
+
+    public void rollback() {
+        connection.endTransaction();
     }
 
     public void executeScriptFromAssets(String filePath) throws IOException {
@@ -84,7 +98,7 @@ public abstract class SQLiteDatasource extends SQLiteOpenHelper {
             try {
                 if (assetStream != null) assetStream.close();
             } catch (IOException ioException) {
-                Log.e(SQLiteDatasource.class.getSimpleName(), "Error while reading assets", ioException);
+                Log.e(SQLiteDataSource.class.getSimpleName(), "Error while reading assets", ioException);
             }
         }
     }
