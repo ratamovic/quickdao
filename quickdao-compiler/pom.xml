@@ -23,6 +23,7 @@
         <dependency>
             <groupId>com.squareup</groupId>
             <artifactId>javapoet</artifactId>
+            <!--<optional>true</optional>-->
         </dependency>
         <dependency>
             <groupId>org.reflections</groupId>
